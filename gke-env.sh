@@ -369,6 +369,7 @@ db() {
     if [ "$1" = "stop" ]; then
         msg stage "Stop database ..."
         log helm uninstall $DB_RELEASE --namespace $DB_NAMESPACE
+        log kubectl delete namespace $DB_NAMESPACE --wait=true
     fi
 
     if [ "$1" = "info" ]; then
@@ -410,6 +411,19 @@ cluster() {
 
     if [ "$1" = "check" ]; then
         msg "K8s cluster state: $(cluster get status)"
+        # Hack for cygwin
+        if [ "$(uname -o)" = "Cygwin" ] && [ -n "$KUBECONFIG" ]; then
+            KUBECONFIG_SAVE="$KUBECONFIG"
+            KUBECONFIG="$(cygpath -u "$KUBECONFIG")"
+            export KUBECONFIG
+        fi
+        log gcloud container clusters get-credentials "$I_NAME" --zone="$ZONE" --project="$PROJECT" --quiet
+        # Revert the hack for cygwin
+        if [ -n "$KUBECONFIG_SAVE" ]; then
+            KUBECONFIG="$KUBECONFIG_SAVE"
+            export KUBECONFIG
+            unset KUBECONFIG_SAVE
+        fi
     fi
 
     if [ "$1" = "describe" ]; then
@@ -501,6 +515,19 @@ cluster() {
         echo "--set platform=gke --set storage.volumes.serverPlugins.storageClass=nfs-client --set storage.volumes.serverPlugins.storage=10Gi"
     fi
 
+    if [ "$1" = "refresh" ]; then
+
+        local i
+
+        for i in $(log kubectl get namespaces --output jsonpath="{.items[*].metadata.name}"); do
+            if [ "$i" = "default" ] || [ "$i" = "kube-node-lease" ] || [ "$i" = "kube-public" ] || [ "$i" = "kube-system" ]; then
+                continue
+            fi
+            log kubectl delete namespace $i --wait=true
+        done
+
+    fi
+
 }
 
 filestore() {
@@ -534,7 +561,7 @@ filestore() {
     fi
 
     if [ "$1" = "check" ]; then
-        msg "filestore  state: $(filestore get state)"
+        msg "filestore state: $(filestore get state)"
     fi
 
     if [ "$1" = "describe" ]; then
@@ -564,6 +591,21 @@ filestore() {
     fi
 
 }
+
+if ! command -v yq; then
+
+    IMAGE_YQ="mikefarah/yq:4.13.5"
+
+    docker inspect --type=image "$IMAGE_YQ" >/dev/null 2>&1 || docker pull --quiet "$IMAGE_YQ"
+
+    yq() {
+        local CURRENT_USER="$(id -u ${USER}):$(id -g ${USER})"
+        local FN
+        for FN; do :; done;
+        docker run -i --rm --user "$CURRENT_USER" -v "$PWD:/workdir" -v "$FN:$FN" "$IMAGE_YQ" "$@"
+    }
+
+fi
 
 start() {
     vpc start
@@ -599,6 +641,12 @@ stop() {
 restart() {
     stop
     start
+}
+
+refresh() {
+    db stop
+    cluster refresh
+    db start
 }
 
 info() {

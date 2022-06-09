@@ -1,0 +1,7 @@
+# log files
+flow-server-init-job.log
+cluster-events.log
+
+# VIM swaps
+*.swp
+

@@ -7,19 +7,22 @@ set -e
 
 K8S_NAMESPACE="dev"
 
-DOCKER_REGISTRY="docker.io/cloudbees"
+#DOCKER_REGISTRY="docker.io/cloudbees"
 #DOCKER_TAG="10.5.1.154796_3.2.14_20220523"
-DOCKER_TAG=latest
+#DOCKER_TAG=latest
 
 #DOCKER_REGISTRY="gcr.io/cloudbees-ops-gcr/cd"
 #DOCKER_TAG="build-10.6.0.155127_3.2.14_20220607"
 #DOCKER_TAG=latest
 
+DOCKER_REGISTRY="gcr.io/flow-testing-project/bee-19305"
+DOCKER_TAG=build
+
 HELM_RELEASE="cbcd"
 HELM_CHART="cloudbees/cloudbees-flow"
 HELM_ARGS=""
 
-CBCD_DEMO_MODE=1
+CBCD_DEMO_MODE=0
 
 # -----------------------------------------------------------
 
@@ -36,6 +39,8 @@ install() {
     local ENV_PARAMS
     local HELM_STATUS
     local CMD
+
+    updateHelmRepo
 
     rm -f flow-server-init-job.log
     rm -f cluster-events.log
@@ -59,7 +64,8 @@ install() {
         --set images.registry=$DOCKER_REGISTRY --set images.tag=$DOCKER_TAG \
         --set zookeeper.image.repository=$DOCKER_REGISTRY/cbflow-tools --set zookeeper.image.tag=$DOCKER_TAG \
         $ENV_PARAMS \
-        $HELM_ARGS)"
+        $HELM_ARGS \
+        "$@")"
     msg "$CMD"
     # eval allows quotes in the variable
     eval $CMD &
@@ -180,6 +186,9 @@ uninstall() {
     msg "Uninstall ..."
     log kubectl delete --namespace "$K8S_NAMESPACE" job.batch/flow-server-init-job || true
     log helm uninstall "$HELM_RELEASE" --namespace "$K8S_NAMESPACE" --wait --debug
+    # remove PVCs also by removing whole namespace
+    # https://github.com/helm/helm/issues/5156
+    log kubectl delete namespace "$K8S_NAMESPACE" --wait=true
 }
 
 info() {
@@ -464,6 +473,19 @@ checkDockerLatestTag() {
 
 }
 
+updateHelmRepo() {
+    if [ -e "$HELM_CHART" ]; then
+        msg "Update dependencies for local chart..."
+        log helm dependency update "$HELM_CHART"
+    else
+        msg "Update CloudBees public helm repository..."
+        if ! helm repo list | grep --silent --perl-regexp '^cloudbees\s+'; then
+            log helm repo add cloudbees https://public-charts.artifacts.cloudbees.com/repository/public/
+        fi
+        log helm repo update cloudbees
+    fi
+}
+
 trap_handler() {
     EXIT_CODE=$?
     SIGNAL=$1
@@ -503,13 +525,13 @@ else
     ACTION="install"
 fi
 
-if [ -n "$1" ]; then
+if [ -n "$1" ] && [ "${1#-}" = "$1" ]; then
     HELM_CHART="$1"
     shift
 fi
 
 if [ "$ACTION" = "install" ] || [ "$ACTION" = "uninstall" ] || [ "$ACTION" = "info" ]; then
-    $ACTION
+    $ACTION "$@"
 else
     msg error "Unknown action '$ACTION'"
     exit 1
