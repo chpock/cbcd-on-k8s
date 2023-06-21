@@ -573,11 +573,11 @@ filestore() {
         msg stage "Create filestore ..."
 
         # Capacity in GB
-        # Tiers: basic-hdd basic-ssd enterprise
+        # Tiers: standard enterprise
         log gcloud filestore instances create "$I_NAME" \
             --file-share=capacity=1024,name=filestore \
             --network=name="$(vpc get name)" \
-            --tier=basic-hdd \
+            --tier=standard \
             --location=$ZONE \
             --project=$PROJECT
 
