@@ -3,7 +3,7 @@
 # Copyright (c) 2022 CloudBees, Inc.
 # All rights reserved.
 
-set -e
+set -Ee
 
 IAM="kkushnir"
 REGION="us-west2"
@@ -34,6 +34,8 @@ K8S_NODE_MACHINE="n2d-standard-8"
 
 KUBECONFIG="$(pwd)/.kubeconfig.yaml"
 export KUBECONFIG
+
+[ -t 2 ] && PS4="$(printf "\033[0;31m+\033[0m ")"
 
 if [ "$1" = "-silent" ]; then
     SILENT=1
@@ -95,6 +97,94 @@ random() {
 
 }
 
+_props() {
+    local TEMP_VAR="TEMP_FILE_PROPS_$1"
+    local TEMP_VAL="$(eval echo \$$TEMP_VAR)"
+    if [ -z "$TEMP_VAL" ]; then
+        TEMP_VAL="$(mktemp --suffix="-k8s-env-$1-$IAM")"
+        eval "$TEMP_VAR=\"$TEMP_VAL\""
+        CLEANUP_TEMP_FILES="$TEMP_VAL $CLEANUP_TEMP_FILES"
+    fi
+    [ "$(uname -o)" = "Cygwin" ] && TEMP_VAL="$(cygpath -m "$TEMP_VAL")"
+    echo "local PROPS=\"$TEMP_VAL\""
+    echo "$TEMP_VAR=\"$TEMP_VAL\""
+    echo "CLEANUP_TEMP_FILES=\"$CLEANUP_TEMP_FILES\""
+}
+
+_common() {
+
+    local CMD="$1"
+    shift
+
+    local _="$(_props $CMD)"
+    eval "$_"
+
+    echo "$_"
+    echo "local CMD=\"$CMD\""
+
+    if [ "$1" = "fetch" ]; then
+        return
+    fi
+
+    if [ "$1" = "start" ]; then
+        echo "msg stage \"$CMD: starting...\""
+    elif [ "$1" = "check" ]; then
+        echo "msg stage \"$CMD: checking...\""
+    elif [ "$1" = "stop" ]; then
+        echo "msg stage \"$CMD: stopping...\""
+    elif [ "$1" = "refresh" ]; then
+        echo "msg stage \"$CMD: refreshing...\""
+    fi
+
+    if [ ! -s "$PROPS" ]; then
+        if ! $CMD fetch; then
+            rm -f "$PROPS"
+            if [ "$1" = "check" ] || [ "$1" = "info" ] || [ "$1" = "get" ] || [ "$1" = "describe" ] || [ "$1" = "refresh" ]; then
+                echo "msg error \"$CMD is stopped\""
+                return
+            elif [ "$1" = "stop" ]; then
+                echo "msg \"$CMD is stopped\""
+                echo "return"
+                return
+            fi
+        else
+            if [ "$1" = "start" ]; then
+                echo "msg \"$CMD: already exists\""
+                echo "return"
+                return
+            fi
+        fi
+    fi
+
+    if [ "$1" = "get" ]; then
+        echo "yq e \".\$2\" \"$PROPS\""
+        echo "return"
+        return
+    elif [ "$1" = "describe" ]; then
+        echo "yq -C e \"$PROPS\""
+        echo "return"
+        return
+    fi
+
+    return
+
+}
+
+#template() {
+#
+#    eval "$(_common <cmd> "$@")"
+#
+#    if [ "$1" = "fetch" ]; then
+#    elif [ "$1" = "check" ]; then
+#    elif [ "$1" = "start" ]; then
+#    elif [ "$1" = "stop" ]; then
+#    elif [ "$1" = "info" ]; then
+#    elif [ "$1" = "refresh" ]; then
+#    else
+#        msg error "$CMD: unsupported cmd $1"
+#    fi
+#}
+
 kubeconfig() {
 
     eval "$(_common kubeconfig "$@")"
@@ -105,7 +195,7 @@ kubeconfig() {
     if [ "$1" = "fetch" ]; then
 
         log -noerror kubectl config view >"$PROPS"
-        if [ "$(kubeconfig get 'contexts[0].context.cluster')" != "$I_NAME" ]; then
+        if [ "$(kubeconfig get 'contexts[0].context.cluster' 2>/dev/null)" != "$I_NAME" ]; then
             return 1
         fi
 
@@ -135,7 +225,7 @@ kubeconfig() {
 
     elif [ "$1" = "stop" ]; then
 
-        _noop
+        true
 
     else
         msg error "$CMD: unsupported cmd $1"
@@ -365,97 +455,6 @@ db() {
     fi
 
 }
-
-_noop() {
-    local noop=noop
-}
-
-_props() {
-    local TEMP_VAR="TEMP_FILE_PROPS_$1"
-    local TEMP_VAL="$(eval echo \$$TEMP_VAR)"
-    if [ -z "$TEMP_VAL" ]; then
-        TEMP_VAL="$(mktemp --suffix="-k8s-env-$1-$IAM")"
-        eval "$TEMP_VAR=\"$TEMP_VAL\""
-        CLEANUP_TEMP_FILES="$TEMP_VAL $CLEANUP_TEMP_FILES"
-    fi
-    [ "$(uname -o)" = "Cygwin" ] && TEMP_VAL="$(cygpath -m "$TEMP_VAL")"
-    echo "local PROPS=\"$TEMP_VAL\""
-    echo "$TEMP_VAR=\"$TEMP_VAL\""
-    echo "CLEANUP_TEMP_FILES=\"$CLEANUP_TEMP_FILES\""
-}
-
-_common() {
-
-    local CMD="$1"
-    shift
-
-    local _="$(_props $CMD)"
-    eval "$_"
-
-    echo "$_"
-    echo "local CMD=\"$CMD\""
-
-    if [ "$1" = "fetch" ]; then
-        return
-    fi
-
-    if [ "$1" = "start" ]; then
-        msg stage "$CMD: starting..." >&2
-    elif [ "$1" = "check" ]; then
-        msg stage "$CMD: checking..." >&2
-    elif [ "$1" = "stop" ]; then
-        msg stage "$CMD: stopping..." >&2
-    elif [ "$1" = "refresh" ]; then
-        msg stage "$CMD: refreshing..." >&2
-    fi
-
-    if [ ! -s "$PROPS" ]; then
-        if ! $CMD fetch; then
-            if [ "$1" = "check" ] || [ "$1" = "info" ] || [ "$1" = "get" ] || [ "$1" = "describe" ] || [ "$1" = "refresh" ]; then
-                echo "exit 1"
-                msg error "$CMD: does not exist" >&2
-            elif [ "$1" = "stop" ]; then
-                msg "$CMD: does not exist" >&2
-                echo "return"
-                return
-            fi
-        else
-            if [ "$1" = "start" ]; then
-                msg "$CMD: already exists" >&2
-                echo "return"
-                return
-            fi
-        fi
-    fi
-
-    if [ "$1" = "get" ]; then
-        echo "yq e \".\$2\" \"$PROPS\""
-        echo "return"
-        return
-    elif [ "$1" = "describe" ]; then
-        echo "yq -C e \"$PROPS\""
-        echo "return"
-        return
-    fi
-
-    return
-
-}
-
-#template() {
-#
-#    eval "$(_common <cmd> "$@")"
-#
-#    if [ "$1" = "fetch" ]; then
-#    elif [ "$1" = "check" ]; then
-#    elif [ "$1" = "start" ]; then
-#    elif [ "$1" = "stop" ]; then
-#    elif [ "$1" = "info" ]; then
-#    elif [ "$1" = "refresh" ]; then
-#    else
-#        msg error "$CMD: unsupported cmd $1"
-#    fi
-#}
 
 cluster() {
 
