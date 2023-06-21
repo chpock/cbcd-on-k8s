@@ -32,13 +32,23 @@ K8S_NODE_MACHINE="n2d-standard-8"
 #NETWORK="projects/ops-shared-vpc/global/networks/ops-vpc1"
 #SUBNETWORK="testing-cloud-cd-dev"
 
+KUBECONFIG="$(pwd)/.kubeconfig.yaml"
+export KUBECONFIG
+
 if [ "$1" = "-silent" ]; then
     SILENT=1
     shift
 fi
 
 log() {
-    (set -x; "$@")
+
+    if [ "$1" = "-noerror" ]; then
+        shift
+        (set -x; "$@" 2>&1)
+    else
+        (set -x; "$@")
+    fi
+
 }
 
 msg() {
@@ -85,49 +95,70 @@ random() {
 
 }
 
+kubeconfig() {
+
+    eval "$(_common kubeconfig "$@")"
+
+    local CLUSTER_NAME="$(cluster get name)"
+    local I_NAME="gke_${PROJECT}_${ZONE}_$CLUSTER_NAME"
+
+    if [ "$1" = "fetch" ]; then
+
+        log -noerror kubectl config view >"$PROPS"
+        if [ "$(kubeconfig get 'contexts[0].context.cluster')" != "$I_NAME" ]; then
+            return 1
+        fi
+
+    elif [ "$1" = "check" ]; then
+
+        msg "kubeconfig state: OK"
+
+    elif [ "$1" = "start" ]; then
+
+        # Hack for cygwin
+        if [ "$(uname -o)" = "Cygwin" ] && [ -n "$KUBECONFIG" ]; then
+            KUBECONFIG_SAVE="$KUBECONFIG"
+            KUBECONFIG="$(cygpath -u "$KUBECONFIG")"
+            export KUBECONFIG
+        fi
+
+        log gcloud container clusters get-credentials "$CLUSTER_NAME" --zone="$ZONE" --project="$PROJECT" --quiet
+
+        # Revert the hack for cygwin
+        if [ -n "$KUBECONFIG_SAVE" ]; then
+            KUBECONFIG="$KUBECONFIG_SAVE"
+            export KUBECONFIG
+            unset KUBECONFIG_SAVE
+        fi
+
+        $CMD check
+
+    elif [ "$1" = "stop" ]; then
+
+        _noop
+
+    else
+        msg error "$CMD: unsupported cmd $1"
+    fi
+
+}
+
 
 vpc() {
 
+    eval "$(_common vpc "$@")"
+
     local I_NAME="$IAM-k8s-dev"
-    local i
 
-    [ -z "$TEMP_FILE_VPC_PROPS" ] && TEMP_FILE_VPC_PROPS="$(mktemp --suffix="-k8s-env-vpc-$IAM")"
-    local FILE_PROPS="$TEMP_FILE_VPC_PROPS"
-    [ "$(uname -o)" = "Cygwin" ] && FILE_PROPS="$(cygpath -m "$FILE_PROPS")"
+    if [ "$1" = "fetch" ]; then
 
-    if [ "$1" = "get" ]; then
-        [ ! -s "$FILE_PROPS" ] && vpc check
-        yq e ".$2" "$FILE_PROPS"
-        return
-    fi
+        log -noerror gcloud compute networks describe "$I_NAME" >"$PROPS"
 
-    msg stage "Check VPC..."
+    elif [ "$1" = "check" ]; then
 
-    if log gcloud compute networks describe "$I_NAME" 2>/dev/null >"$FILE_PROPS"; then
-        if [ "$1" = "start" ]; then
-            msg "VPC already exists"
-            return
-        fi
-    else
-        if [ "$1" = "check" ] || [ "$1" = "stop" ]; then
-            msg "VPC doesn't exist"
-            return
-        elif [ "$1" != "start" ]; then
-            msg error "VPC doesn't exist"
-        fi
-    fi
-
-    if [ "$1" = "check" ]; then
         msg "VPC state: OK"
-    fi
 
-    if [ "$1" = "describe" ]; then
-        yq "$FILE_PROPS"
-    fi
-
-    if [ "$1" = "start" ]; then
-
-        msg stage "Create VPC..."
+    elif [ "$1" = "start" ]; then
 
         log gcloud compute networks create "$I_NAME" \
             --subnet-mode=custom \
@@ -147,12 +178,12 @@ vpc() {
         #     --network=$I_NAME \
         #     --project=$PROJECT
 
-        vpc check
+        $CMD check
 
-    fi
+    elif [ "$1" = "stop" ]; then
 
-    if [ "$1" = "stop" ]; then
-        msg stage "Stop VPC..."
+        local i
+
         for i in $(log gcloud compute firewall-rules list --filter network=$I_NAME --format="table[no-heading](name)"); do
             log gcloud compute firewall-rules delete "$i" --quiet || true
         done
@@ -162,51 +193,28 @@ vpc() {
         #     --project=$PROJECT || true
         # log gcloud compute addresses delete google-managed-services-$I_NAME --global --quiet || true
         log gcloud compute networks delete "$I_NAME" --quiet
+
+    else
+        msg error "$CMD: unsupported cmd $1"
     fi
 
 }
 
 subnet() {
 
+    eval "$(_common subnet "$@")"
+
     local I_NAME="$IAM-tier-1"
 
-    [ -z "$TEMP_FILE_SUBNET_PROPS" ] && TEMP_FILE_SUBNET_PROPS="$(mktemp --suffix="-k8s-env-subnet-$IAM")"
-    local FILE_PROPS="$TEMP_FILE_SUBNET_PROPS"
-    [ "$(uname -o)" = "Cygwin" ] && FILE_PROPS="$(cygpath -m "$FILE_PROPS")"
+    if [ "$1" = "fetch" ]; then
 
-    if [ "$1" = "get" ]; then
-        [ ! -s "$FILE_PROPS" ] && subnet check
-        yq e ".$2" "$FILE_PROPS"
-        return
-    fi
+        log -noerror gcloud compute networks subnets describe "$I_NAME" --region="$REGION" >"$PROPS"
 
-    msg stage "Check subnetwork..."
+    elif [ "$1" = "check" ]; then
 
-    if log gcloud compute networks subnets describe "$I_NAME" --region="$REGION" 2>/dev/null >"$FILE_PROPS"; then
-        if [ "$1" = "start" ]; then
-            msg "Subnetwork already exists"
-            return
-        fi
-    else
-        if [ "$1" = "check" ] || [ "$1" = "stop" ]; then
-            msg "Subnetwork doesn't exist"
-            return
-        elif [ "$1" != "start" ]; then
-            msg error "Subnetwork doesn't exist"
-        fi
-    fi
-
-    if [ "$1" = "check" ]; then
         msg "Subnetwork state: OK"
-    fi
 
-    if [ "$1" = "describe" ]; then
-        yq "$FILE_PROPS"
-    fi
-
-    if [ "$1" = "start" ]; then
-
-        msg stage "Create subnetwork..."
+    elif [ "$1" = "start" ]; then
 
         log gcloud compute networks subnets create "$I_NAME" \
             --network="$(vpc get name)" \
@@ -221,13 +229,14 @@ subnet() {
             --rules=all \
             --action=allow
 
-        subnet check
+        $CMD check
 
-    fi
+    elif [ "$1" = "stop" ]; then
 
-    if [ "$1" = "stop" ]; then
-        msg stage "Stop subnetwork..."
         log gcloud compute networks subnets delete "$I_NAME" --region="$REGION" --quiet
+
+    else
+        msg error "$CMD: unsupported cmd $1"
     fi
 
 }
@@ -245,7 +254,7 @@ subnet() {
 #
 #    msg "Check database..."
 #
-#    if RESULT="$(log gcloud sql instances describe "$I_NAME" 2>/dev/null)"; then
+#    if RESULT="$(log -noerror gcloud sql instances describe "$I_NAME")"; then
 #        TEMP_FILE_DB_PROPS="$(mktemp --suffix="-k8s-env-db-$IAM")"
 #        echo "$RESULT" >"$TEMP_FILE_DB_PROPS"
 #        if [ "$1" = "start" ]; then
@@ -309,49 +318,26 @@ subnet() {
 
 db() {
 
+    eval "$(_common db "$@")"
+
     local DB_NAMESPACE="db"
     local DB_RELEASE="mysql-5-7"
     # from https://hub.docker.com/r/bitnami/mysql/tags
     local DB_TAG="5.7.37-debian-10-r95"
 
-    [ -z "$TEMP_FILE_DB_PROPS" ] && TEMP_FILE_DB_PROPS="$(mktemp --suffix="-k8s-env-db-$IAM")"
-    local FILE_PROPS="$TEMP_FILE_DB_PROPS"
-    [ "$(uname -o)" = "Cygwin" ] && FILE_PROPS="$(cygpath -m "$FILE_PROPS")"
+    if [ "$1" = "fetch" ]; then
 
-    if [ "$1" = "get" ]; then
-        [ ! -s "$FILE_PROPS" ] && db check
-        yq e ".$2" "$FILE_PROPS"
-        return
-    fi
-
-    msg stage "Check db..."
-
-    if helm list --namespace $DB_NAMESPACE --superseded --deployed --failed --pending --filter $DB_RELEASE | grep --silent "$DB_RELEASE"; then
-        kubectl get secret --namespace $DB_NAMESPACE $DB_RELEASE -o yaml >"$FILE_PROPS"
-        if [ "$1" = "start" ]; then
-            msg "DB already exists"
-            return
+        if helm list --namespace $DB_NAMESPACE --superseded --deployed --failed --pending --filter $DB_RELEASE | grep --silent "$DB_RELEASE"; then
+            kubectl get secret --namespace $DB_NAMESPACE $DB_RELEASE -o yaml >"$PROPS"
+        else
+            return 1
         fi
-    else
-        if [ "$1" = "check" ] || [ "$1" = "stop" ] || [ "$1" = "info" ]; then
-            msg "DB doesn't exist"
-            return
-        elif [ "$1" != "start" ]; then
-            msg error "DB doesn't exist"
-        fi
-    fi
 
-    if [ "$1" = "check" ]; then
+    elif [ "$1" = "check" ]; then
+
         msg "DB state: OK"
-    fi
 
-    if [ "$1" = "describe" ]; then
-        yq "$FILE_PROPS"
-    fi
-
-    if [ "$1" = "start" ]; then
-
-        msg stage "Create database..."
+    elif [ "$1" = "start" ]; then
 
         if ! helm repo list --output table | grep --silent '^bitnami\s'; then
             log helm repo add bitnami https://charts.bitnami.com/bitnami
@@ -364,75 +350,128 @@ db() {
             --set image.debug=true \
             --wait --wait-for-jobs --timeout 5m0s
 
-    fi
+    elif [ "$1" = "stop" ]; then
 
-    if [ "$1" = "stop" ]; then
-        msg stage "Stop database ..."
         log helm uninstall $DB_RELEASE --namespace $DB_NAMESPACE
         log kubectl delete namespace $DB_NAMESPACE --wait=true
-    fi
 
-    if [ "$1" = "info" ]; then
+    elif [ "$1" = "info" ]; then
+
         msg "Use the following parameters for helm install:"
-        echo "--set database.dbType=mysql --set database.dbName=commander --set database.dbUser=root --set database.dbPassword=\"$(db get data.mysql-root-password | base64 -d)\" --set database.clusterEndpoint=$DB_RELEASE.$DB_NAMESPACE" --set database.dbPort=3306
+        echo "--set database.dbType=mysql --set database.dbName=commander --set database.dbUser=root --set database.dbPassword=\"$($CMD get data.mysql-root-password | base64 -d)\" --set database.clusterEndpoint=$DB_RELEASE.$DB_NAMESPACE" --set database.dbPort=3306
+
+    else
+        msg error "$CMD: unsupported cmd $1"
     fi
 
 }
 
-cluster() {
+_noop() {
+    local noop=noop
+}
 
-    local I_NAME="$IAM-dev"
+_props() {
+    local TEMP_VAR="TEMP_FILE_PROPS_$1"
+    local TEMP_VAL="$(eval echo \$$TEMP_VAR)"
+    if [ -z "$TEMP_VAL" ]; then
+        TEMP_VAL="$(mktemp --suffix="-k8s-env-$1-$IAM")"
+        eval "$TEMP_VAR=\"$TEMP_VAL\""
+        CLEANUP_TEMP_FILES="$TEMP_VAL $CLEANUP_TEMP_FILES"
+    fi
+    [ "$(uname -o)" = "Cygwin" ] && TEMP_VAL="$(cygpath -m "$TEMP_VAL")"
+    echo "local PROPS=\"$TEMP_VAL\""
+    echo "$TEMP_VAR=\"$TEMP_VAL\""
+    echo "CLEANUP_TEMP_FILES=\"$CLEANUP_TEMP_FILES\""
+}
 
-    [ -z "$TEMP_FILE_CLUSTER_PROPS" ] && TEMP_FILE_CLUSTER_PROPS="$(mktemp --suffix="-k8s-env-cluster-$IAM")"
-    local FILE_PROPS="$TEMP_FILE_CLUSTER_PROPS"
-    [ "$(uname -o)" = "Cygwin" ] && FILE_PROPS="$(cygpath -m "$FILE_PROPS")"
+_common() {
 
-    if [ "$1" = "get" ]; then
-        [ ! -s "$FILE_PROPS" ] && cluster check
-        yq e ".$2" "$FILE_PROPS"
+    local CMD="$1"
+    shift
+
+    local _="$(_props $CMD)"
+    eval "$_"
+
+    echo "$_"
+    echo "local CMD=\"$CMD\""
+
+    if [ "$1" = "fetch" ]; then
         return
     fi
 
-    msg stage "Check cluster..."
-
-    if log gcloud container clusters describe "$I_NAME" --zone=$ZONE 2>/dev/null >"$FILE_PROPS"; then
-        if [ "$1" = "start" ]; then
-            msg "K8s cluster already exists: $(cluster get status)"
-            return
-        fi
-    else
-        if [ "$1" = "check" ] || [ "$1" = "stop" ]; then
-            msg "K8s cluster doesn't exist"
-            return
-        elif [ "$1" != "start" ]; then
-            msg error "K8s cluster doesn't exist"
-        fi
-    fi
-
-    if [ "$1" = "check" ]; then
-        msg "K8s cluster state: $(cluster get status)"
-        # Hack for cygwin
-        if [ "$(uname -o)" = "Cygwin" ] && [ -n "$KUBECONFIG" ]; then
-            KUBECONFIG_SAVE="$KUBECONFIG"
-            KUBECONFIG="$(cygpath -u "$KUBECONFIG")"
-            export KUBECONFIG
-        fi
-        log gcloud container clusters get-credentials "$I_NAME" --zone="$ZONE" --project="$PROJECT" --quiet
-        # Revert the hack for cygwin
-        if [ -n "$KUBECONFIG_SAVE" ]; then
-            KUBECONFIG="$KUBECONFIG_SAVE"
-            export KUBECONFIG
-            unset KUBECONFIG_SAVE
-        fi
-    fi
-
-    if [ "$1" = "describe" ]; then
-        yq "$FILE_PROPS"
-    fi
-
     if [ "$1" = "start" ]; then
+        msg stage "$CMD: starting..." >&2
+    elif [ "$1" = "check" ]; then
+        msg stage "$CMD: checking..." >&2
+    elif [ "$1" = "stop" ]; then
+        msg stage "$CMD: stopping..." >&2
+    elif [ "$1" = "refresh" ]; then
+        msg stage "$CMD: refreshing..." >&2
+    fi
 
-        msg stage "Create k8s cluster..."
+    if [ ! -s "$PROPS" ]; then
+        if ! $CMD fetch; then
+            if [ "$1" = "check" ] || [ "$1" = "info" ] || [ "$1" = "get" ] || [ "$1" = "describe" ] || [ "$1" = "refresh" ]; then
+                echo "exit 1"
+                msg error "$CMD: does not exist" >&2
+            elif [ "$1" = "stop" ]; then
+                msg "$CMD: does not exist" >&2
+                echo "return"
+                return
+            fi
+        else
+            if [ "$1" = "start" ]; then
+                msg "$CMD: already exists" >&2
+                echo "return"
+                return
+            fi
+        fi
+    fi
+
+    if [ "$1" = "get" ]; then
+        echo "yq e \".\$2\" \"$PROPS\""
+        echo "return"
+        return
+    elif [ "$1" = "describe" ]; then
+        echo "yq -C e \"$PROPS\""
+        echo "return"
+        return
+    fi
+
+    return
+
+}
+
+#template() {
+#
+#    eval "$(_common <cmd> "$@")"
+#
+#    if [ "$1" = "fetch" ]; then
+#    elif [ "$1" = "check" ]; then
+#    elif [ "$1" = "start" ]; then
+#    elif [ "$1" = "stop" ]; then
+#    elif [ "$1" = "info" ]; then
+#    elif [ "$1" = "refresh" ]; then
+#    else
+#        msg error "$CMD: unsupported cmd $1"
+#    fi
+#}
+
+cluster() {
+
+    eval "$(_common cluster "$@")"
+
+    local I_NAME="$IAM-dev"
+
+    if [ "$1" = "fetch" ]; then
+
+        log -noerror gcloud container clusters describe "$I_NAME" --zone=$ZONE >"$PROPS"
+
+    elif [ "$1" = "check" ]; then
+
+        msg "K8s cluster state: $($CMD get status)"
+
+    elif [ "$1" = "start" ]; then
 
         # Hack for cygwin
         if [ "$(uname -o)" = "Cygwin" ] && [ -n "$KUBECONFIG" ]; then
@@ -476,7 +515,7 @@ cluster() {
             unset KUBECONFIG_SAVE
         fi
 
-        cluster check
+        $CMD check
 
         # Magic here!
         local CRT_FILE="$(mktemp --suffix="-k8s-env-cluster-crt-$IAM")"
@@ -503,21 +542,16 @@ cluster() {
             --set nfs.server="$(filestore get 'networks[0].ipAddresses[0]')" \
             --set nfs.path="/$(filestore get 'fileShares[0].name')"
 
-    fi
+    elif [ "$1" = "stop" ]; then
 
-    if [ "$1" = "stop" ]; then
-        msg stage "Stop k8s cluster..."
         log gcloud container clusters delete "$I_NAME" --zone=$ZONE --quiet
-    fi
 
-    if [ "$1" = "info" ]; then
+    elif [ "$1" = "info" ]; then
+
         msg "Use the following parameters for helm install:"
         echo "--set platform=gke --set storage.volumes.serverPlugins.storageClass=nfs-client --set storage.volumes.serverPlugins.storage=10Gi"
-    fi
 
-    if [ "$1" = "refresh" ]; then
-
-        local i
+    elif [ "$1" = "refresh" ]; then
 
         for i in $(log kubectl get namespaces --output jsonpath="{.items[*].metadata.name}"); do
             if [ "$i" = "default" ] || [ "$i" = "kube-node-lease" ] || [ "$i" = "kube-public" ] || [ "$i" = "kube-system" ]; then
@@ -526,51 +560,27 @@ cluster() {
             log kubectl delete namespace $i --wait=true
         done
 
+    else
+        msg error "$CMD: unsupported cmd $1"
     fi
 
 }
 
 filestore() {
 
+    eval "$(_common filestore "$@")"
+
     local I_NAME="$IAM-k8s-fs"
 
-    [ -z "$TEMP_FILE_FS_PROPS" ] && TEMP_FILE_FS_PROPS="$(mktemp --suffix="-k8s-env-fs-$IAM")"
-    local FILE_PROPS="$TEMP_FILE_FS_PROPS"
-    [ "$(uname -o)" = "Cygwin" ] && FILE_PROPS="$(cygpath -m "$FILE_PROPS")"
+    if [ "$1" = "fetch" ]; then
 
-    if [ "$1" = "get" ]; then
-        [ ! -s "$FILE_PROPS" ] && filestore check
-        yq e ".$2" "$FILE_PROPS"
-        return
-    fi
+        log -noerror gcloud filestore instances describe "$I_NAME" --location=$ZONE >"$PROPS"
 
-    msg stage "Check filestore..."
+    elif [ "$1" = "check" ]; then
 
-    if log gcloud filestore instances describe "$I_NAME" --location=$ZONE 2>/dev/null >"$FILE_PROPS"; then
-        if [ "$1" = "start" ]; then
-            msg "Filestore already exists: $(filestore get state)"
-            return
-        fi
-    else
-        if [ "$1" = "check" ] || [ "$1" = "stop" ]; then
-            msg "Filestore doesn't exist"
-            return
-        elif [ "$1" != "start" ]; then
-            msg error "Filestore doesn't exist"
-        fi
-    fi
+        msg "filestore state: $($CMD get state)"
 
-    if [ "$1" = "check" ]; then
-        msg "filestore state: $(filestore get state)"
-    fi
-
-    if [ "$1" = "describe" ]; then
-        yq "$FILE_PROPS"
-    fi
-
-    if [ "$1" = "start" ]; then
-
-        msg stage "Create filestore ..."
+    elif [ "$1" = "start" ]; then
 
         # Capacity in GB
         # Tiers: standard enterprise
@@ -581,13 +591,14 @@ filestore() {
             --location=$ZONE \
             --project=$PROJECT
 
-        filestore check
+        $CMD check
 
-    fi
+    elif [ "$1" = "stop" ]; then
 
-    if [ "$1" = "stop" ]; then
-        msg stage "Stop filestore..."
         log gcloud filestore instances delete "$I_NAME" --location=$ZONE --quiet
+
+    else
+        msg error "$CMD: unsupported cmd $1"
     fi
 
 }
@@ -602,6 +613,8 @@ if ! command -v yq; then
         local CURRENT_USER="$(id -u ${USER}):$(id -g ${USER})"
         local FN
         for FN; do :; done;
+        # don't add -t here to avoid CR (^M) in output:
+        # https://github.com/moby/moby/issues/37366
         docker run -i --rm --user "$CURRENT_USER" -v "$PWD:/workdir" -v "$FN:$FN" "$IMAGE_YQ" "$@"
     }
 
@@ -612,6 +625,7 @@ start() {
     subnet start
     filestore start
     cluster start
+    kubeconfig start
     db start
 }
 
@@ -620,6 +634,7 @@ check() {
     subnet check
     filestore check
     cluster check
+    kubeconfig check
     db check
 }
 
@@ -628,6 +643,7 @@ describe() {
     subnet describe
     filestore describe
     cluster describe
+    kubeconfig describe
     db describe
 }
 
@@ -636,6 +652,7 @@ stop() {
     filestore stop
     subnet stop
     vpc stop
+    kubeconfig stop
 }
 
 restart() {
@@ -655,11 +672,7 @@ info() {
 }
 
 _on_exit() {
-    [ -n "$TEMP_FILE_DB_PROPS" ]      && rm -f "$TEMP_FILE_DB_PROPS"
-    [ -n "$TEMP_FILE_FS_PROPS" ]      && rm -f "$TEMP_FILE_FS_PROPS"
-    [ -n "$TEMP_FILE_CLUSTER_PROPS" ] && rm -f "$TEMP_FILE_CLUSTER_PROPS"
-    [ -n "$TEMP_FILE_VPC_PROPS" ]     && rm -f "$TEMP_FILE_VPC_PROPS"
-    [ -n "$TEMP_FILE_SUBNET_PROPS" ]  && rm -f "$TEMP_FILE_SUBNET_PROPS"
+    for i in $CLEANUP_TEMP_FILES; do rm -f "$i"; done
     true
 }
 

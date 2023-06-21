@@ -2,6 +2,10 @@
 flow-server-init-job.log
 cluster-events.log
 
+# kubectl config
+.kubeconfig.yaml
+gke_gcloud_auth_plugin_cache
+
 # VIM swaps
 *.swp
 

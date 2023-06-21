@@ -30,6 +30,9 @@ DEBUG=1
 
 # -----------------------------------------------------------
 
+KUBECONFIG="$(pwd)/.kubeconfig.yaml"
+export KUBECONFIG
+
 log() {
     (set -x; "$@")
 }
