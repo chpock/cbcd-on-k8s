@@ -11,15 +11,16 @@ K8S_NAMESPACE="dev"
 #DOCKER_TAG="10.5.1.154796_3.2.14_20220523"
 #DOCKER_TAG=latest
 
-#DOCKER_REGISTRY="gcr.io/cloudbees-ops-gcr/cd"
-#DOCKER_TAG="build-10.6.0.155127_3.2.14_20220607"
+DOCKER_REGISTRY="gcr.io/cloudbees-ops-gcr/cd"
+DOCKER_TAG="preflight-2023.10.0.165797_3.2.51_20230704"
 #DOCKER_TAG=latest
 
-DOCKER_REGISTRY="gcr.io/flow-testing-project/bee-19305"
-DOCKER_TAG=build
+#DOCKER_REGISTRY="gcr.io/flow-testing-project/bee-19305"
+#DOCKER_TAG=build
 
 HELM_RELEASE="cbcd"
-HELM_CHART="cloudbees/cloudbees-flow"
+#HELM_CHART="cloudbees/cloudbees-flow"
+HELM_CHART="/home/ubuntu/flow-on-kubernetes/charts/cloudbees-flow"
 HELM_ARGS=""
 
 CBCD_DEMO_MODE=0
@@ -27,6 +28,10 @@ CBCD_DEMO_MODE=0
 # -----------------------------------------------------------
 
 DEBUG=1
+TRACE=0
+
+USE_GKE_GCLOUD_AUTH_PLUGIN=True
+export USE_GKE_GCLOUD_AUTH_PLUGIN
 
 # -----------------------------------------------------------
 
@@ -61,11 +66,17 @@ install() {
 
     msg "Install ..."
     log kubectl delete --namespace "$K8S_NAMESPACE" job.batch/flow-server-init-job || true
+    #
     # echo removes \n
+    #
+    # ingress-nginx.controller.admissionWebhooks.enabled=false - to avoid an error:
+    #     Error: failed to create resource: Internal error occurred: failed calling webhook "validate.nginx.ingress.kubernetes.io": failed to call webhook: Post "https://cbcd-ingress-nginx-controller-admission.dev.svc:443/networking/v1/ingresses?timeout=10s": no endpoints available for service "cbcd-ingress-nginx-controller-admission"
     CMD="$(echo helm upgrade \"$HELM_RELEASE\" \"$HELM_CHART\" --install --namespace \"$K8S_NAMESPACE\" --create-namespace \
         --timeout 30m \
         --set images.registry=$DOCKER_REGISTRY --set images.tag=$DOCKER_TAG \
         --set zookeeper.image.repository=$DOCKER_REGISTRY/cbflow-tools --set zookeeper.image.tag=$DOCKER_TAG \
+        --set ingress-nginx.controller.admissionWebhooks.enabled=false \
+        --set ingress-nginx.controller.patch.enabled=false \
         $ENV_PARAMS \
         $HELM_ARGS \
         "$@")"
@@ -175,6 +186,9 @@ install() {
             *' | Shutdown is complete')
                 msg stage "${line##* | }"
                 ;;
+            *)
+                msg trace "${line##* | }"
+                ;;
         esac
 
     done
@@ -199,13 +213,36 @@ info() {
     msg "Get cluster info ..."
 
     #local LB_HOST_NAME="$(log kubectl get service $HELM_RELEASE-nginx-ingress-controller --namespace "$K8S_NAMESPACE" -o jsonpath="{.status.loadBalancer.ingress[0].hostname}")"
-    local LB_HOST_IP="$(log kubectl get service $HELM_RELEASE-nginx-ingress-controller --namespace "$K8S_NAMESPACE" -o jsonpath="{.status.loadBalancer.ingress[0].ip}")"
+    local LB_HOST_IP="$(log kubectl get service $HELM_RELEASE-ingress-nginx-controller --namespace "$K8S_NAMESPACE" -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null)"
+    if [ -z "$LB_HOST_IP" ]; then
+        LB_HOST_IP="$(log kubectl get service $HELM_RELEASE-nginx-ingress-controller --namespace "$K8S_NAMESPACE" -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null)"
+    fi
     local ADMIN_PASS="$(log kubectl get secret --namespace "$K8S_NAMESPACE" $HELM_RELEASE-cloudbees-flow-credentials -o jsonpath="{.data.CBF_SERVER_ADMIN_PASSWORD}" | base64 --decode)"
 
     msg "CBCD UI is available at: https://${LB_HOST_IP}/flow"
     msg "Username: admin"
     msg "Password: $ADMIN_PASS"
     msg "CBCD server is available at: https://${LB_HOST_IP}:8443"
+
+    local ANALYTICS_PASS="$(log kubectl get secret --namespace "$K8S_NAMESPACE" $HELM_RELEASE-cloudbees-flow-analytics -o jsonpath="{.data.CBF_ANALYTICS_PASSWORD}" | base64 --decode)"
+    local ANALYTICS_PASS_ADMIN="$(log kubectl get secret --namespace "$K8S_NAMESPACE" $HELM_RELEASE-cloudbees-flow-analytics -o jsonpath="{.data.CBF_ANALYTICS_ADMIN_PASSWORD}" | base64 --decode)"
+    local ANALYTICS_URL="$(log kubectl get service --namespace "$K8S_NAMESPACE" flow-analytics -o jsonpath='https://{.metadata.name}.{.metadata.namespace}:{.spec.ports[0].port}')"
+
+    msg "Analytics URL: $ANALYTICS_URL"
+    msg "Analytics user: reportuser"
+    msg "Analytics user password: $ANALYTICS_PASS"
+    msg "Analytics admin: admin"
+    msg "Analytics admin password: $ANALYTICS_PASS_ADMIN"
+
+    local DOIS_PASS="$(log kubectl get secret --namespace "$K8S_NAMESPACE" $HELM_RELEASE-cloudbees-flow-dois -o jsonpath="{.data.CBF_DOIS_PASSWORD}" | base64 --decode)"
+    local DOIS_PASS_ADMIN="$(log kubectl get secret --namespace "$K8S_NAMESPACE" $HELM_RELEASE-cloudbees-flow-dois -o jsonpath="{.data.CBF_DOIS_ADMIN_PASSWORD}" | base64 --decode)"
+    local DOIS_URL="$(log kubectl get service --namespace "$K8S_NAMESPACE" flow-devopsinsight -o jsonpath='https://{.metadata.name}.{.metadata.namespace}:{.spec.ports[0].port}')"
+
+    msg "DOIS URL: $DOIS_URL"
+    msg "DOIS user: reportuser"
+    msg "DOIS user password: $DOIS_PASS"
+    msg "DOIS admin: admin"
+    msg "DOIS admin password: $DOIS_PASS_ADMIN"
 
 }
 
@@ -234,6 +271,11 @@ msg() {
         debug)
             [ "$DEBUG" = "1" ] || return 0
             MSG_PREFIX="$_C_gray[${_C_GRAY}DEBUG$_C_gray]$_C "
+            shift
+            ;;
+        trace)
+            [ "$TRACE" = "1" ] || return 0
+            MSG_PREFIX="$_C_gray[${_C_GRAY}TRACE$_C_gray]$_C "
             shift
             ;;
         info)

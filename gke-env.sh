@@ -35,6 +35,9 @@ K8S_NODE_MACHINE="n2d-standard-8"
 KUBECONFIG="$(pwd)/.kubeconfig.yaml"
 export KUBECONFIG
 
+USE_GKE_GCLOUD_AUTH_PLUGIN=True
+export USE_GKE_GCLOUD_AUTH_PLUGIN
+
 [ -t 2 ] && PS4="$(printf "\033[0;31m+\033[0m ")"
 
 if [ "$1" = "-silent" ]; then
@@ -558,6 +561,12 @@ cluster() {
             fi
             log kubectl delete namespace $i --wait=true
         done
+        # Remove possible ValidatingWebhookConfiguration objects from ingress.
+        # these objects are not namespaced, thus we delete here everything
+        # that has namespace in service.
+        for i in $(log kubectl get ValidatingWebhookConfiguration -o json | jq -r '.items[] | select (.webhooks[].clientConfig.service.namespace != null) | .metadata.name'); do
+            log kubectl delete validatingwebhookconfiguration $i --wait=true
+        done
 
     else
         msg error "$CMD: unsupported cmd $1"
@@ -618,6 +627,21 @@ if ! command -v yq; then
     }
 
 fi
+
+#if ! command -v jq; then
+
+    IMAGE_JQ="stedolan/jq:latest"
+
+    docker inspect --type=image "$IMAGE_JQ" >/dev/null 2>&1 || docker pull --quiet "$IMAGE_JQ"
+
+    jq() {
+        local CURRENT_USER="$(id -u ${USER}):$(id -g ${USER})"
+        # don't add -t here to avoid CR (^M) in output:
+        # https://github.com/moby/moby/issues/37366
+        docker run -i --rm --user "$CURRENT_USER" -v "$PWD:/workdir" "$IMAGE_JQ" "$@"
+    }
+
+#fi
 
 start() {
     vpc start
