@@ -565,7 +565,7 @@ cluster() {
         # these objects are not namespaced, thus we delete here everything
         # that has namespace in service.
         for i in $(log kubectl get ValidatingWebhookConfiguration -o json | jq -r '.items[] | select (.webhooks[].clientConfig.service.namespace != null) | .metadata.name'); do
-            log kubectl delete validatingwebhookconfiguration $i --wait=true
+            log kubectl delete validatingwebhookconfiguration $i --wait=true || true
         done
 
     else

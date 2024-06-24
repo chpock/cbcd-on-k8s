@@ -12,7 +12,7 @@ K8S_NAMESPACE="dev"
 #DOCKER_TAG=latest
 
 DOCKER_REGISTRY="gcr.io/cloudbees-ops-gcr/cd"
-DOCKER_TAG="preflight-2023.10.0.165797_3.2.51_20230704"
+DOCKER_TAG="build-2024.06.0.174364_3.2.109_20240424"
 #DOCKER_TAG=latest
 
 #DOCKER_REGISTRY="gcr.io/flow-testing-project/bee-19305"
@@ -23,7 +23,7 @@ HELM_RELEASE="cbcd"
 HELM_CHART="/home/ubuntu/flow-on-kubernetes/charts/cloudbees-flow"
 HELM_ARGS=""
 
-CBCD_DEMO_MODE=0
+CBCD_DEMO_MODE=1
 
 # -----------------------------------------------------------
 
@@ -71,10 +71,10 @@ install() {
     #
     # ingress-nginx.controller.admissionWebhooks.enabled=false - to avoid an error:
     #     Error: failed to create resource: Internal error occurred: failed calling webhook "validate.nginx.ingress.kubernetes.io": failed to call webhook: Post "https://cbcd-ingress-nginx-controller-admission.dev.svc:443/networking/v1/ingresses?timeout=10s": no endpoints available for service "cbcd-ingress-nginx-controller-admission"
+    [ -z "$DOCKER_REGISTRY" ] || set -- --set images.registry=$DOCKER_REGISTRY --set zookeeper.image.repository=$DOCKER_REGISTRY/cbflow-tools "$@"
+    [ -z "$DOCKER_TAG" ] || set -- --set images.tag=$DOCKER_TAG --set zookeeper.image.tag=$DOCKER_TAG "$@"
     CMD="$(echo helm upgrade \"$HELM_RELEASE\" \"$HELM_CHART\" --install --namespace \"$K8S_NAMESPACE\" --create-namespace \
         --timeout 30m \
-        --set images.registry=$DOCKER_REGISTRY --set images.tag=$DOCKER_TAG \
-        --set zookeeper.image.repository=$DOCKER_REGISTRY/cbflow-tools --set zookeeper.image.tag=$DOCKER_TAG \
         --set ingress-nginx.controller.admissionWebhooks.enabled=false \
         --set ingress-nginx.controller.patch.enabled=false \
         $ENV_PARAMS \
